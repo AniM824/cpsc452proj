@@ -1,0 +1,9 @@
+# Ignore all __pycache__ folders everywhere
+__pycache__/
+*/__pycache__/
+
+# Ignore the entire utils/__pycache__ folder (already covered by */__pycache__/, but explicit if you want)
+utils/__pycache__/
+
+# Ignore everything in the data folder
+data/
