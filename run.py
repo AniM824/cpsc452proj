@@ -1,5 +1,6 @@
 from data import RotatedCIFAR10
 from baseline import BaselineInceptionResnetV1
+from equivariant import EquivariantInceptionResnetV1
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 import torch
@@ -10,17 +11,22 @@ from tqdm import tqdm
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(device)
 
+print("AAA")
 transform = transforms.Compose([
     transforms.Resize((160, 160)),
     transforms.ToTensor()
 ])
+print("BBB")
 dataset = RotatedCIFAR10(root="./data", train=True, download=True, transform=transform, rotation_angle=None)
 train_loader = DataLoader(dataset, batch_size=64, shuffle=True)
+print("CCC")
 
-model = BaselineInceptionResnetV1(pretrained=None, classify=True, num_classes=10, device=device)
+model = baseline_small_inception(num_classes=100)
+print("DDD")
 
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.Adam(model.parameters(), lr=1e-3)
+print("EEE")
 
 num_epochs = 20
 for epoch in range(num_epochs):
