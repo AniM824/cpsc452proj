@@ -10,66 +10,77 @@ from torchvision.utils import make_grid
 
 
 # --- CIFAR 100 --- 
-class CIFAR100RotationTestDataset(Dataset):
-    def __init__(self, root, rotation_range=(0, 360), train=False):
-        """
-        Args:
-            root (str): Path to dataset.
-            rotation_range (tuple): (min_angle, max_angle) for random rotation.
-            train (bool): Load training split if True, else test split.
-        """
-        self.dataset = CIFAR100(
-            root=root,
-            train=train,
-            download=True,
-            transform=None 
-        )
-        self.rotation_min, self.rotation_max = rotation_range
+import random
+import numpy as np
+import torchvision.transforms.functional as TF
+from torchvision.datasets import CIFAR100
+from torch.utils.data import Dataset
+
+# 1) Normalization stats for CIFAR-100
+MEAN = [0.5071, 0.4867, 0.4408]
+STD  = [0.2675, 0.2565, 0.2761]
+
+import random
+import numpy as np
+import torchvision.transforms.functional as TF
+from torchvision.datasets import CIFAR100
+from torch.utils.data import Dataset
+
+# normalization stats
+CIFAR100_MEAN = [0.5071, 0.4867, 0.4408]
+CIFAR100_STD  = [0.2675, 0.2565, 0.2761]
+
+class CIFAR100Base(Dataset):
+    def __init__(self, root, train, download=True):
+        self.dataset = CIFAR100(root=root, train=train, download=download, transform=None)
 
     def __len__(self):
         return len(self.dataset)
 
-    def __getitem__(self, idx):
-        img, label = self.dataset[idx]
+    def _preprocess(self, pil_img):
+        """1) Resize → 2) To tensor"""
+        img = TF.resize(pil_img, (32, 32))
+        return TF.to_tensor(img)
 
-        # Convert to tensor first (before rotation)
-        img = TF.to_tensor(img)
-        
-        # Apply padding before rotation to avoid information loss
-        # Calculate diagonal length to ensure rotated image fits
-        diagonal = int(np.ceil(np.sqrt(2) * max(img.shape[1:])))
-        pad_size = (diagonal - img.shape[1]) // 2
-        img = TF.pad(img, padding=[pad_size, pad_size, pad_size, pad_size], padding_mode='reflect')
-        
-        # Apply random continuous rotation
-        angle = random.uniform(self.rotation_min, self.rotation_max)
-        img = TF.rotate(img, angle, expand=False)  # No expand to maintain size
-        
-        # Center crop to get back to desired size
-        img = TF.center_crop(img, (32, 32))
+    def _normalize(self, tensor_img):
+        """3) Normalize"""
+        return TF.normalize(tensor_img, CIFAR100_MEAN, CIFAR100_STD)
+
+class CIFAR100TrainDataset(CIFAR100Base):
+    def __init__(self, root):
+        super().__init__(root, train=True)
+
+    def __getitem__(self, idx):
+        pil_img, label = self.dataset[idx]
+        img = self._preprocess(pil_img)
+        img = self._normalize(img)
+        return img, label
+
+class CIFAR100RotationTestDataset(CIFAR100Base):
+    def __init__(self, root, rotation_range=(0, 360), apply_rotation=True):
+        super().__init__(root, train=False)
+        self.min_angle, self.max_angle = rotation_range
+        self.apply_rotation = apply_rotation
+
+    def __getitem__(self, idx):
+        pil_img, label = self.dataset[idx]
+
+        img = self._preprocess(pil_img)
+
+        angle = 0.0 
+        if self.apply_rotation:
+            diag = int(np.ceil(np.sqrt(2) * 32))
+            pad = (diag - 32) // 2
+            img = TF.pad(img, [pad] * 4, padding_mode='reflect')
+
+            angle = random.uniform(self.min_angle, self.max_angle)
+            img = TF.rotate(img, angle, expand=False)
+
+            img = TF.center_crop(img, (32, 32))
+
+        img = self._normalize(img)
 
         return img, label, angle
-
-class CIFAR100TrainDataset(Dataset):
-    def __init__(self, root):
-        self.dataset = CIFAR100(
-            root=root,
-            train=True,
-            download=True,
-            transform=None
-        )
-
-    def __len__(self):
-        return len(self.dataset)
-
-    def __getitem__(self, idx):
-        img, label = self.dataset[idx]
-
-        # NO rotation!
-        img = TF.resize(img, (32, 32))
-        img = TF.to_tensor(img)
-
-        return img, label
 
 def get_cifar100_train_loader(root, batch_size=128):
     dataset = CIFAR100TrainDataset(root=root)
@@ -84,7 +95,7 @@ def get_cifar100_train_loader(root, batch_size=128):
     return dataloader
 
 def get_cifar100_rotation_test_loader(root, batch_size=128, rotation_range=(0, 360)):
-    dataset = CIFAR100RotationTestDataset(root=root, rotation_range=rotation_range, train=False)
+    dataset = CIFAR100RotationTestDataset(root=root, rotation_range=rotation_range, apply_rotation=True)
 
     dataloader = DataLoader(
         dataset,
@@ -93,6 +104,19 @@ def get_cifar100_rotation_test_loader(root, batch_size=128, rotation_range=(0, 3
         num_workers=4,
         pin_memory=True,
     )
+    return dataloader
+
+def get_cifar100_test_loader(root, batch_size=128, rotation_range=(0, 360)):
+    dataset = CIFAR100RotationTestDataset(root=root, rotation_range=rotation_range, apply_rotation=False)
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=4,
+        pin_memory=True,
+    )
+
     return dataloader
 
 

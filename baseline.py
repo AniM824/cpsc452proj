@@ -3,9 +3,7 @@ import numpy as np
 from torch import nn
 from torch.nn import Linear, ReLU, CrossEntropyLoss, Sequential, Conv2d, MaxPool2d, AvgPool2d, Softmax, BatchNorm2d, Dropout
 from torch.optim import SGD
-from google.colab import files
-from google.colab import drive
-drive.mount('/content/drive')
+
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 ## Inception Model Creation
@@ -57,8 +55,8 @@ class baseline_small_inception(nn.Module):
         self.inception3b = InceptionBlock(cin=336, cout1=176, cout3=160)
         self.avgpool = AvgPool2d(kernel_size=7, padding = 1)
         self.fully_connected = Linear(336, num_classes)
-        self.dropout = Dropout(0.9)
-        self.fully_relu = ReLU()
+        self.dropout = Dropout(0)
+        # self.fully_relu = ReLU()
 
     def forward(self, x):
         x = self.conv1(x)
@@ -76,7 +74,7 @@ class baseline_small_inception(nn.Module):
         x = torch.flatten(x,1)
         x = self.fully_connected(x)
         x = self.dropout(x)
-        x = self.fully_relu(x)
+        # x = self.fully_relu(x)
         return x
 
 
