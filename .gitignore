@@ -7,3 +7,6 @@ utils/__pycache__/
 
 # Ignore everything in the data folder
 data/
+results/
+plots/
+slurm_scripts/

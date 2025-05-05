@@ -1,4 +1,10 @@
-from data import get_cifar100_train_loader, get_cifar100_rotation_test_loader, get_cifar100_test_loader
+from data import (
+    get_cifar10_train_loader, get_cifar10_rotation_test_loader, get_cifar10_test_loader,
+    get_cifar100_train_loader, get_cifar100_rotation_test_loader, get_cifar100_test_loader,
+    get_emnist_train_loader, get_emnist_rotation_test_loader, get_emnist_test_loader,
+    get_isic_train_loader, get_isic_test_loader,
+    get_tem_train_loader, get_tem_test_loader
+)
 from baseline import baseline_small_inception
 from equivariant import EquivariantSmallInception
 import torch
@@ -12,63 +18,65 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 
-def train_and_test_model(model_class, model_name, num_classes, train_loader, device, num_epochs=20):
+def train_and_test_model(
+    model_class,
+    model_name,
+    dataset_name,
+    num_classes,
+    train_loader,
+    standard_test_loader,
+    rotated_test_loader=None,
+    device=device,
+    num_epochs=20
+):
     """
-    Instantiates, trains, and tests a given model class.
+    Instantiates, trains, and tests a given model class on a specific dataset.
 
     Args:
-        model_class: The class of the model to train (e.g., baseline_small_inception).
+        model_class: The class of the model to train.
         model_name (str): A string name for the model (e.g., "Baseline").
+        dataset_name (str): Name of the dataset (e.g., "CIFAR100").
         num_classes (int): Number of output classes for the model.
         train_loader: DataLoader for the training data.
+        standard_test_loader: DataLoader for the standard (non-rotated) test data.
+        rotated_test_loader: DataLoader for the rotated test data (optional).
         device: The device to run the model on ('cuda' or 'cpu').
         num_epochs (int): Number of epochs to train for.
 
     Returns:
-        tuple: (standard_test_accuracy, rotated_test_accuracy)
+        tuple: (best_standard_test_accuracy, best_rotated_test_accuracy or None) observed during training.
     """
-    print(f"\n--- Starting Training for {model_name} Model ---")
+    print(f"\n--- Starting Training for {model_name} Model on {dataset_name} ---")
 
-    # Create results directory
-    os.makedirs("results", exist_ok=True)
-    os.makedirs("results/models", exist_ok=True)
-    
-    # Create CSV file for training metrics
-    csv_path = os.path.join("results", f"{model_name.lower().replace(' ', '_')}_training_metrics.csv")
+    results_dir = os.path.join("results", dataset_name.lower())
+    models_dir = os.path.join(results_dir, "models")
+    os.makedirs(results_dir, exist_ok=True)
+    os.makedirs(models_dir, exist_ok=True)
+
+    csv_filename = f"{dataset_name.lower()}_{model_name.lower().replace(' ', '_')}_training_metrics.csv"
+    csv_path = os.path.join(results_dir, csv_filename)
     csv_file = open(csv_path, 'w', newline='')
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(['Epoch', 'Loss', 'Accuracy', 'Learning Rate'])
-    
+    header = ['Epoch', 'Loss', 'Accuracy', 'Learning Rate', 'Standard Test Acc']
+    if rotated_test_loader:
+        header.append('Rotated Test Acc')
+    csv_writer.writerow(header)
+
     model = model_class(num_classes=num_classes)
     model.to(device)
 
     criterion = nn.CrossEntropyLoss()
 
-    if model_name == "Equivariant":
-        conv_params = []
-        fc_params = []
-        
-        for name, param in model.named_parameters():
-            if 'fully_connected' in name:
-                fc_params.append(param)
-            else:
-                conv_params.append(param)
-                
-        optimizer = optim.AdamW([
-            {'params': conv_params, 'lr': 3e-3},
-            {'params': fc_params, 'lr': 1e-3}
-        ], weight_decay=1e-4)
-    else:
-        learning_rate = 1e-3
-        optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+    learning_rate = 1e-3
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
 
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
     best_acc = 0.0
-    os.makedirs("saved_models", exist_ok=True)
-    best_model_path = os.path.join("saved_models", f'best_{model_name.lower().replace(" ", "_")}_model.pth')
-    # Also save in results directory
-    best_results_model_path = os.path.join("results/models", f'best_{model_name.lower().replace(" ", "_")}_model.pth')
+    best_std_test_acc = 0.0
+    best_rot_test_acc = 0.0 if rotated_test_loader else None
+    base_model_filename = f'best_{dataset_name.lower()}_{model_name.lower().replace(" ", "_")}_model.pth'
+    best_results_model_path = os.path.join(models_dir, base_model_filename)
 
     for epoch in range(num_epochs):
         model.train()
@@ -76,7 +84,7 @@ def train_and_test_model(model_class, model_name, num_classes, train_loader, dev
         correct = 0
         total = 0
 
-        progress_bar = tqdm(train_loader, desc=f"{model_name} Epoch {epoch+1}/{num_epochs}", leave=False)
+        progress_bar = tqdm(train_loader, desc=f"{dataset_name} {model_name} Epoch {epoch+1}/{num_epochs}", leave=False)
 
         for inputs, labels in progress_bar:
             inputs, labels = inputs.to(device), labels.to(device)
@@ -102,52 +110,57 @@ def train_and_test_model(model_class, model_name, num_classes, train_loader, dev
         epoch_loss = running_loss / total
         epoch_acc = 100. * correct / total
         current_lr = scheduler.get_last_lr()[0]
-        print(f"{model_name} Epoch {epoch+1:02d} | Final Loss: {epoch_loss:.4f} | Final Accuracy: {epoch_acc:.2f}% | LR: {current_lr:.6f}")
-        
-        # Write metrics to CSV
-        csv_writer.writerow([epoch+1, epoch_loss, epoch_acc, current_lr])
+        print(f"{dataset_name} {model_name} Epoch {epoch+1:02d} | Train Loss: {epoch_loss:.4f} | Train Accuracy: {epoch_acc:.2f}% | LR: {current_lr:.6f}")
+
+        # --- Periodic Testing ---
+        std_test_acc_epoch = ''
+        rot_test_acc_epoch = '' if rotated_test_loader else None
+
+        # Test every 10 epochs or on the last epoch
+        if (epoch + 1) % 10 == 0 or (epoch + 1) == num_epochs:
+            model.eval() # Set model to evaluation mode for testing
+            print(f"--- Running periodic testing at Epoch {epoch+1} ---")
+            std_test_acc_epoch, _, _ = test_model(
+                model, standard_test_loader, device,
+                description=f"{dataset_name} {model_name} Standard Test (Epoch {epoch+1})"
+            )
+            # Only run rotated test if loader is provided
+            if rotated_test_loader:
+                rot_test_acc_epoch, _, _ = test_model(
+                    model, rotated_test_loader, device,
+                    description=f"{dataset_name} {model_name} Rotated Test (Epoch {epoch+1})"
+                )
+                print(f"Epoch {epoch+1} | Standard Test Acc: {std_test_acc_epoch:.2f}% | Rotated Test Acc: {rot_test_acc_epoch:.2f}%")
+                best_rot_test_acc = max(best_rot_test_acc, rot_test_acc_epoch)
+            else:
+                 print(f"Epoch {epoch+1} | Standard Test Acc: {std_test_acc_epoch:.2f}%")
+
+            print(f"-------------------------------------------------")
+            best_std_test_acc = max(best_std_test_acc, std_test_acc_epoch)
+
+        row_data = [epoch+1, epoch_loss, epoch_acc, current_lr, std_test_acc_epoch]
+        if rotated_test_loader:
+            row_data.append(rot_test_acc_epoch)
+        csv_writer.writerow(row_data)
         csv_file.flush()
 
         if epoch_acc > best_acc:
             best_acc = epoch_acc
-            torch.save(model.state_dict(), best_model_path)
             torch.save(model.state_dict(), best_results_model_path)
-            print(f"New best {model_name} model saved with accuracy: {best_acc:.2f}% to {best_model_path}")
+            print(f"New best {dataset_name} {model_name} model saved based on train acc: {best_acc:.2f}% to {best_results_model_path}")
 
     # Close CSV file
     csv_file.close()
-    print(f"\nTraining complete for {model_name}. Loading best model for testing...")
+    print(f"\nTraining complete for {model_name} on {dataset_name}.")
+    print(f"Best Standard Test Accuracy observed during training: {best_std_test_acc:.2f}%")
+    if best_rot_test_acc is not None:
+        print(f"Best Rotated Test Accuracy observed during training: {best_rot_test_acc:.2f}%")
 
-    model.load_state_dict(torch.load(best_model_path))
-    model.eval()
-
-    print(f"\nTesting {model_name} on standard CIFAR-100 test set...")
-    standard_test_loader = get_cifar100_test_loader(root="./data")
-    standard_test_acc, _, _ = test_model(model, standard_test_loader, device, description=f"{model_name} Standard Test")
-
-    print(f"\nTesting {model_name} on rotated CIFAR-100 test set...")
-    rotated_test_loader = get_cifar100_rotation_test_loader(root="./data")
-    rotated_test_acc, _, _ = test_model(model, rotated_test_loader, device, description=f"{model_name} Rotated Test")
-
-    print(f"\n--- {model_name} Model Results ---")
-    print(f"Final Standard Test Accuracy: {standard_test_acc:.2f}%")
-    print(f"Final Rotated Test Accuracy: {rotated_test_acc:.2f}%")
-    print(f"----------------------------------")
-    
-    # Write test results to file
-    results_file_path = os.path.join("results", f"{model_name.lower().replace(' ', '_')}_test_results.txt")
-    with open(results_file_path, 'w') as f:
-        f.write(f"--- {model_name} Model Results ---\n")
-        f.write(f"Final Standard Test Accuracy: {standard_test_acc:.2f}%\n")
-        f.write(f"Final Rotated Test Accuracy: {rotated_test_acc:.2f}%\n")
-        f.write(f"----------------------------------\n")
-    
-    print(f"Test results saved to {results_file_path}")
-
-    return standard_test_acc, rotated_test_acc
+    return best_std_test_acc, best_rot_test_acc
 
 
 def test_model(model, test_loader, device, description="Testing"):
+    model.eval()
     correct = 0
     total = 0
     all_predictions = []
@@ -179,52 +192,187 @@ def test_model(model, test_loader, device, description="Testing"):
     return test_acc, all_predictions, all_labels
 
 
-
 if __name__ == "__main__":
-    train_loader = get_cifar100_train_loader(root="./data")
+    EMNIST_EPOCHS = 30
+    CIFAR_10_EPOCHS = 30
+    CIFAR_100_EPOCHS = 50
+    ISIC_EPOCHS = 50
+    TEM_EPOCHS = 50
+    BATCH_SIZE = 64
 
-    NUM_CLASSES = 100
-    NUM_EPOCHS = 50
+    # CIFAR-10 Config
+    ROOT_CIFAR_10 = "./data"
+    NUM_CLASSES_CIFAR_10 = 10
 
-    baseline_std_acc, baseline_rot_acc = train_and_test_model(
+    # CIFAR-100 Config
+    ROOT_CIFAR_100 = "./data"
+    NUM_CLASSES_CIFAR_100 = 100
+
+    # EMNIST Config
+    ROOT_EMNIST = "./data"
+    SPLIT_EMNIST = 'byclass'
+    NUM_CLASSES_EMNIST = 62
+
+    # ISIC Config
+    ROOT_ISIC = "./data/isic"
+    NUM_CLASSES_ISIC = 9
+
+    # TEM Config
+    ROOT_TEM = "./data"
+    NUM_CLASSES_TEM = 14
+
+    results = {}
+
+    print("\n===== Starting EMNIST Experiment =====")
+    emnist_train_loader = get_emnist_train_loader(root=ROOT_EMNIST, split=SPLIT_EMNIST, batch_size=BATCH_SIZE)
+    emnist_test_loader = get_emnist_test_loader(root=ROOT_EMNIST, split=SPLIT_EMNIST, batch_size=BATCH_SIZE)
+    emnist_rot_test_loader = get_emnist_rotation_test_loader(root=ROOT_EMNIST, split=SPLIT_EMNIST, batch_size=BATCH_SIZE)
+
+    results["EMNIST"] = {}
+    results["EMNIST"]["Baseline"] = train_and_test_model(
         model_class=baseline_small_inception,
         model_name="Baseline",
-        num_classes=NUM_CLASSES,
-        train_loader=train_loader,
+        dataset_name="EMNIST",
+        num_classes=NUM_CLASSES_EMNIST,
+        train_loader=emnist_train_loader,
+        standard_test_loader=emnist_test_loader,
+        rotated_test_loader=emnist_rot_test_loader,
         device=device,
-        num_epochs=NUM_EPOCHS
+        num_epochs=EMNIST_EPOCHS
     )
 
-    equivariant_std_acc, equivariant_rot_acc = train_and_test_model(
+    results["EMNIST"]["Equivariant"] = train_and_test_model(
         model_class=EquivariantSmallInception,
         model_name="Equivariant",
-        num_classes=NUM_CLASSES,
-        train_loader=train_loader,
+        dataset_name="EMNIST",
+        num_classes=NUM_CLASSES_EMNIST,
+        train_loader=emnist_train_loader,
+        standard_test_loader=emnist_test_loader,
+        rotated_test_loader=emnist_rot_test_loader,
         device=device,
-        num_epochs=NUM_EPOCHS
+        num_epochs=EMNIST_EPOCHS
+    )
+    print("===== EMNIST Experiment Complete =====")
+
+    print("\n===== Starting CIFAR-10 Experiment =====")
+    cifar_train_loader = get_cifar10_train_loader(root=ROOT_CIFAR_10, batch_size=BATCH_SIZE)
+    cifar_test_loader = get_cifar10_test_loader(root=ROOT_CIFAR_10, batch_size=BATCH_SIZE)
+    cifar_rot_test_loader = get_cifar10_rotation_test_loader(root=ROOT_CIFAR_10, batch_size=BATCH_SIZE)
+
+    results["CIFAR10"] = {}
+    results["CIFAR10"]["Baseline"] = train_and_test_model(
+        model_class=baseline_small_inception,
+        model_name="Baseline",
+        dataset_name="CIFAR10",
+        num_classes=NUM_CLASSES_CIFAR_10,
+        train_loader=cifar_train_loader,
+        standard_test_loader=cifar_test_loader,
+        rotated_test_loader=cifar_rot_test_loader,
+        device=device,
+        num_epochs=CIFAR_10_EPOCHS
     )
 
-    print("\n===== Overall Results =====")
-    print(f"Baseline Model:")
-    print(f"  Standard Test Accuracy: {baseline_std_acc:.2f}%")
-    print(f"  Rotated Test Accuracy:  {baseline_rot_acc:.2f}%")
-    print(f"\nEquivariant Model:")
-    print(f"  Standard Test Accuracy: {equivariant_std_acc:.2f}%")
-    print(f"  Rotated Test Accuracy:  {equivariant_rot_acc:.2f}%")
-    print("==========================")
-    
-    # Write overall results to file
-    overall_results_path = os.path.join("results", "overall_results.txt")
-    with open(overall_results_path, 'w') as f:
-        f.write("===== Overall Results =====\n")
-        f.write(f"Baseline Model:\n")
-        f.write(f"  Standard Test Accuracy: {baseline_std_acc:.2f}%\n")
-        f.write(f"  Rotated Test Accuracy:  {baseline_rot_acc:.2f}%\n")
-        f.write(f"\nEquivariant Model:\n")
-        f.write(f"  Standard Test Accuracy: {equivariant_std_acc:.2f}%\n")
-        f.write(f"  Rotated Test Accuracy:  {equivariant_rot_acc:.2f}%\n")
-        f.write("==========================\n")
-    
-    print(f"Overall results saved to {overall_results_path}")
+    results["CIFAR10"]["Equivariant"] = train_and_test_model(
+        model_class=EquivariantSmallInception,
+        model_name="Equivariant",
+        dataset_name="CIFAR10",
+        num_classes=NUM_CLASSES_CIFAR_10,
+        train_loader=cifar_train_loader,
+        standard_test_loader=cifar_test_loader,
+        rotated_test_loader=cifar_rot_test_loader,
+        device=device,
+        num_epochs=CIFAR_10_EPOCHS
+    )
+    print("===== CIFAR-10 Experiment Complete =====")
 
+    print("\n===== Starting CIFAR-100 Experiment =====")
+    cifar_train_loader = get_cifar100_train_loader(root=ROOT_CIFAR_100, batch_size=BATCH_SIZE)
+    cifar_test_loader = get_cifar100_test_loader(root=ROOT_CIFAR_100, batch_size=BATCH_SIZE)
+    cifar_rot_test_loader = get_cifar100_rotation_test_loader(root=ROOT_CIFAR_100, batch_size=BATCH_SIZE)
+
+    results["CIFAR100"] = {}
+    results["CIFAR100"]["Baseline"] = train_and_test_model(
+        model_class=baseline_small_inception,
+        model_name="Baseline",
+        dataset_name="CIFAR100",
+        num_classes=NUM_CLASSES_CIFAR_100,
+        train_loader=cifar_train_loader,
+        standard_test_loader=cifar_test_loader,
+        rotated_test_loader=cifar_rot_test_loader,
+        device=device,
+        num_epochs=CIFAR_100_EPOCHS
+    )
+
+    results["CIFAR100"]["Equivariant"] = train_and_test_model(
+        model_class=EquivariantSmallInception,
+        model_name="Equivariant",
+        dataset_name="CIFAR100",
+        num_classes=NUM_CLASSES_CIFAR_100,
+        train_loader=cifar_train_loader,
+        standard_test_loader=cifar_test_loader,
+        rotated_test_loader=cifar_rot_test_loader,
+        device=device,
+        num_epochs=CIFAR_100_EPOCHS
+    )
+    print("===== CIFAR-100 Experiment Complete =====")
+
+    print("\n===== Starting ISIC Experiment =====")
+    isic_train_loader = get_isic_train_loader(root=ROOT_ISIC, batch_size=BATCH_SIZE)
+    isic_test_loader = get_isic_test_loader(root=ROOT_ISIC, batch_size=BATCH_SIZE)
+
+    results["ISIC"] = {}
+    results["ISIC"]["Baseline"] = train_and_test_model(
+        model_class=baseline_small_inception,
+        model_name="Baseline",
+        dataset_name="ISIC",
+        num_classes=NUM_CLASSES_ISIC,
+        train_loader=isic_train_loader,
+        standard_test_loader=isic_test_loader,
+        rotated_test_loader=None,
+        device=device,
+        num_epochs=ISIC_EPOCHS
+    )
+
+    results["ISIC"]["Equivariant"] = train_and_test_model(
+        model_class=EquivariantSmallInception,
+        model_name="Equivariant",
+        dataset_name="ISIC",
+        num_classes=NUM_CLASSES_ISIC,
+        train_loader=isic_train_loader,
+        standard_test_loader=isic_test_loader,
+        rotated_test_loader=None, 
+        device=device,
+        num_epochs=ISIC_EPOCHS
+    )
+    print("===== ISIC Experiment Complete =====")
+
+    print("\n===== Starting TEM 2019 Virus Experiment =====")
+    tem_train_loader = get_tem_train_loader(root=ROOT_TEM, batch_size=BATCH_SIZE)
+    tem_test_loader = get_tem_test_loader(root=ROOT_TEM, batch_size=BATCH_SIZE)
+
+    results["TEM"] = {}
+    results["TEM"]["Baseline"] = train_and_test_model(
+        model_class=baseline_small_inception,
+        model_name="Baseline",
+        dataset_name="TEM",
+        num_classes=NUM_CLASSES_TEM,
+        train_loader=tem_train_loader,
+        standard_test_loader=tem_test_loader,
+        rotated_test_loader=None,
+        device=device,
+        num_epochs=TEM_EPOCHS
+    )
+
+    results["TEM"]["Equivariant"] = train_and_test_model(
+        model_class=EquivariantSmallInception,
+        model_name="Equivariant",
+        dataset_name="TEM",
+        num_classes=NUM_CLASSES_TEM,
+        train_loader=tem_train_loader,
+        standard_test_loader=tem_test_loader,
+        rotated_test_loader=None, 
+        device=device,
+        num_epochs=TEM_EPOCHS
+    )
+    print("===== TEM Experiment Complete =====")
 

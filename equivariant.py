@@ -1,11 +1,6 @@
-import os
-import requests
-
 import torch
 from torch import nn
 from torch.nn import functional as F
-
-from utils.download import download_url_to_file
 
 import escnn.gspaces as gspaces
 import escnn.nn as enn
@@ -23,7 +18,7 @@ class BasicEquivariantConv2d(enn.EquivariantModule):
 
         self.out_type = enn.FieldType(
             gspace,
-            [gspace.trivial_repr] * out_fields
+            [gspace.regular_repr] * out_fields
         )
 
         self.conv = enn.R2Conv(
@@ -37,7 +32,7 @@ class BasicEquivariantConv2d(enn.EquivariantModule):
         self.bn   = enn.InnerBatchNorm(
             self.out_type, eps=1e-5, momentum=0.1, affine=True
         )
-        self.relu = enn.ReLU(self.out_type)
+        self.relu = enn.ReLU(self.out_type, inplace=True)
 
     def forward(self, x):
         x = self.conv(x)
@@ -94,7 +89,7 @@ class EquivariantDownsampleBlock(enn.EquivariantModule):
             padding=0
         )
 
-        self.branch2 = enn.PointwiseMaxPool(
+        self.branch2 = enn.NormMaxPool(
             in_type, kernel_size=3, stride=2, padding=0
         )
 
@@ -125,79 +120,80 @@ class EquivariantSmallInception(nn.Module):
     def __init__(self, num_classes=10):
         super().__init__()
         
-        self.gspace = gspaces.rot2dOnR2(N=-1)
+        self.gspace = gspaces.rot2dOnR2(N=8)
         self.input_type = enn.FieldType(self.gspace, [self.gspace.trivial_repr] * 3)
         
-        # Update out_fields to match baseline channel counts directly
         self.conv1 = BasicEquivariantConv2d(
             in_type=self.input_type,
-            out_fields=96, # Baseline: 96 channels
+            out_fields=12,
             kernel_size=3, stride=1, padding=0
         )
         
         self.inception1a = EquivariantInceptionBlock(
-            in_type=self.conv1.out_type, # 96 fields in
-            out_fields1=32, # Baseline: 32
-            out_fields3=32  # Baseline: 32 -> 64 fields total
+            in_type=self.conv1.out_type,
+            out_fields1=4,
+            out_fields3=4
         )
         
         self.inception1b = EquivariantInceptionBlock(
-            in_type=self.inception1a.out_type, # 64 fields in
-            out_fields1=32, # Baseline: 32
-            out_fields3=48  # Baseline: 48 -> 80 fields total
+            in_type=self.inception1a.out_type,
+            out_fields1=4,
+            out_fields3=6
         )
         
         self.downsample1 = EquivariantDownsampleBlock(
-            in_type=self.inception1b.out_type, # 80 fields in
-            out_fields3=80 # Baseline: 80. Pool branch keeps 80 fields. -> 160 fields total
+            in_type=self.inception1b.out_type,
+            out_fields3=10
         )
         
         self.inception2a = EquivariantInceptionBlock(
-            in_type=self.downsample1.out_type, # 160 fields in
-            out_fields1=112, # Baseline: 112
-            out_fields3=48   # Baseline: 48 -> 160 fields total
+            in_type=self.downsample1.out_type,
+            out_fields1=14,
+            out_fields3=6
         )
         
         self.inception2b = EquivariantInceptionBlock(
-            in_type=self.inception2a.out_type, # 160 fields in
-            out_fields1=96, # Baseline: 96
-            out_fields3=64  # Baseline: 64 -> 160 fields total
+            in_type=self.inception2a.out_type,
+            out_fields1=12,
+            out_fields3=8
         )
         
         self.inception2c = EquivariantInceptionBlock(
-            in_type=self.inception2b.out_type, # 160 fields in
-            out_fields1=80, # Baseline: 80
-            out_fields3=80  # Baseline: 80 -> 160 fields total
+            in_type=self.inception2b.out_type,
+            out_fields1=10,
+            out_fields3=10
         )
         
         self.inception2d = EquivariantInceptionBlock(
-            in_type=self.inception2c.out_type, # 160 fields in
-            out_fields1=48, # Baseline: 48
-            out_fields3=96  # Baseline: 96 -> 144 fields total
+            in_type=self.inception2c.out_type,
+            out_fields1=6,
+            out_fields3=12
         )
         
         self.downsample2 = EquivariantDownsampleBlock(
-            in_type=self.inception2d.out_type, # 144 fields in
-            out_fields3=96 # Baseline: 96. Pool branch keeps 144 fields. -> 240 fields total
+            in_type=self.inception2d.out_type,
+            out_fields3=12
         )
         
         self.inception3a = EquivariantInceptionBlock(
-            in_type=self.downsample2.out_type, # 240 fields in
-            out_fields1=176, # Baseline: 176
-            out_fields3=160  # Baseline: 160 -> 336 fields total
+            in_type=self.downsample2.out_type,
+            out_fields1=22,
+            out_fields3=20
         )
         
         self.inception3b = EquivariantInceptionBlock(
-            in_type=self.inception3a.out_type, # 336 fields in
-            out_fields1=176, # Baseline: 176
-            out_fields3=160  # Baseline: 160 -> 336 fields total
+            in_type=self.inception3a.out_type,
+            out_fields1=22,
+            out_fields3=20
         )
         
-        final_type = self.inception3b.out_type
+        self.group_pool = enn.GroupPooling(self.inception3b.out_type)
 
-        num_invariant_features = final_type.size
+        num_invariant_features = len(self.group_pool.out_type.representations)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fully_connected = nn.Linear(num_invariant_features, num_classes)
-        self.dropout = nn.Dropout(0)
+        self.dropout = nn.Dropout(0.1)
 
 
     def forward(self, x):
@@ -213,11 +209,20 @@ class EquivariantSmallInception(nn.Module):
         x = self.downsample2(x)
         x = self.inception3a(x)
         x = self.inception3b(x)
-        x = x.tensor 
 
-        x = torch.nn.functional.adaptive_avg_pool2d(x, 1)
+        x = self.group_pool(x)
+        x = x.tensor
+
+        x = self.avgpool(x)
         x = torch.flatten(x, 1)
 
         x = self.fully_connected(x)
         x = self.dropout(x)
         return x
+
+if __name__ == "__main__":
+    model = EquivariantSmallInception(num_classes=10)
+
+    # Count trainable parameters
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total number of trainable parameters: {total_params:,}")
